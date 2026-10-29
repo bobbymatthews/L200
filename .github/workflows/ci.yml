@@ -1,0 +1,51 @@
+name: CI Quality & Test Suite
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint, Typecheck & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          uv pip install -r requirements-dev.txt
+          uv pip install -e .
+
+      - name: Lint with Ruff
+        run: |
+          uv run ruff check .
+
+      - name: Type Check with Mypy
+        run: |
+          uv run mypy src --explicit-package-bases
+
+      - name: Run Pytest Suite with Coverage
+        run: |
+          uv run pytest --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Upload Coverage to Actions
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7

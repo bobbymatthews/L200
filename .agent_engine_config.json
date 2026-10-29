@@ -1,0 +1,17 @@
+{
+  "display_name": "omniblog_editorial_engine",
+  "description": "Autonomous Multi-Agent Enterprise Blog & Content Publication Engine powered by Google ADK on Vertex AI Agent Engine",
+  "model": "gemini-2.5-flash",
+  "entrypoint": "agent.py",
+  "root_agent": "root_agent",
+  "requirements_file": "requirements.txt",
+  "extra_packages": [
+    "src"
+  ],
+  "env": {
+    "GOOGLE_GENAI_USE_ENTERPRISE": "1",
+    "ENABLE_CLOUD_TRACE": "true",
+    "OTEL_SERVICE_NAME": "omniblog-agent-engine",
+    "LOG_LEVEL": "INFO"
+  }
+}
