@@ -2,11 +2,13 @@
 
 Specialized sub-agent dedicated to technical research, industry trend discovery,
 benchmark retrieval, and authoritative citation gathering.
+Routed to fast, cost-efficient model for high-throughput information retrieval.
 """
 
 from __future__ import annotations
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.workflow._retry_config import RetryConfig
 
 from src.config import settings
 from src.tools.research_tools import extract_key_citations, search_web_research
@@ -26,10 +28,19 @@ Always maintain objectivity, technical depth, and factual rigor.
 Do not invent benchmark numbers or URLs; rely on verified knowledge and tool results.
 """
 
+research_retry_config = RetryConfig(
+    max_attempts=settings.model_max_retries,
+    initial_delay=settings.model_retry_delay,
+    max_delay=settings.model_max_delay,
+    backoff_factor=2.0,
+    jitter=1.0,
+)
+
 research_agent = Agent(
-    model=settings.model_name,
+    model=settings.research_model,
     name="research_agent",
     description="Conducts deep technical research, benchmark gathering, and citation extraction.",
     instruction=RESEARCH_INSTRUCTION,
     tools=[search_web_research, extract_key_citations],
+    retry_config=research_retry_config,
 )

@@ -28,6 +28,7 @@ def save_blog_artifact(
     markdown_content: str,
     topic: str = "General",
     target_keyword: str = "",
+    approval_status: str = "published",
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
     """Packages and saves a finalized blog post bundle as a versioned publication artifact.
@@ -37,6 +38,7 @@ def save_blog_artifact(
         markdown_content: The full markdown content of the post.
         topic: The overarching topic or category.
         target_keyword: The primary SEO keyword.
+        approval_status: Publication status ('published', 'pending_approval', 'draft').
         tool_context: ADK execution context with ArtifactService access.
 
     Returns:
@@ -69,7 +71,7 @@ target_keyword: "{target_keyword}"
 word_count: {word_count}
 seo_score: {seo_score}
 reading_ease: {reading_ease}
-status: "published"
+status: "{approval_status}"
 ---
 
 """
@@ -93,6 +95,7 @@ status: "published"
         "seo_score": seo_score,
         "reading_ease": reading_ease,
         "published_at": now,
+        "approval_status": approval_status,
         "seo_report": seo_data,
     }
     meta_file.write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
@@ -134,6 +137,7 @@ status: "published"
         published_at=now,
         tags=[topic, target_keyword] if target_keyword else [topic],
         artifact_uri=adk_artifact_uri or str(markdown_file.resolve()),
+        approval_status=approval_status,
     )
     brand_memory.record_publication(record)
 

@@ -1,7 +1,7 @@
 """OmniBlog Interactive Command Line Interface.
 
 Provides CLI commands for article generation, real-time draft auditing,
-brand guideline inspection, and interactive authoring modes using Rich console output.
+brand guideline inspection, context compaction, and human-in-the-loop approvals.
 """
 
 from __future__ import annotations
@@ -14,7 +14,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from src.config import settings
+from src.memory.compaction import compact_session_history
 from src.memory.store import brand_memory
+from src.tools.approval_tools import (
+    confirm_publication_approval,
+    request_publication_approval,
+)
 from src.tools.artifact_tools import list_saved_articles, save_blog_artifact
 from src.tools.research_tools import search_web_research
 from src.tools.seo_tools import analyze_seo_and_readability, generate_meta_and_slug
@@ -32,18 +38,22 @@ def cli():
 @cli.command()
 @click.argument("topic")
 @click.option("--keyword", "-k", default="", help="Target SEO keyword")
-def generate(topic: str, keyword: str):
+@click.option("--auto-approve", is_flag=True, default=False, help="Bypass human-in-the-loop confirmation")
+def generate(topic: str, keyword: str, auto_approve: bool):
     """Generate a publication-ready blog post for a given topic."""
     console.print(Panel(f"[bold cyan]OmniBlog Editorial Newsroom[/bold cyan]\nGenerating article for: [yellow]{topic}[/yellow]"))
 
-    with console.status("[bold green]Stage 1: Researching topic and citations..."):
+    rprint(f"[dim]Model Routing: Research ({settings.research_model}), Writer ({settings.writer_model}), Critic ({settings.critic_model}), SEO ({settings.seo_model})[/dim]")
+
+    with console.status("[bold green]Stage 1: Researching topic and citations (Flash tier)..."):
         research = search_web_research(topic)
         target_kw = keyword or (research.get("recommended_keywords", ["Cloud"])[0])
 
     rprint(f"✓ Research complete. Primary keyword: [bold]{target_kw}[/bold]")
 
-    with console.status("[bold green]Stage 2: Drafting technical content and code snippets..."):
-        title = f"Mastering {topic.title()}: Architectural Patterns & Best Practices"
+    with console.status("[bold green]Stage 2: Drafting technical content and code snippets (Pro Reasoning tier)..."):
+        guidelines = brand_memory.get_guidelines()
+        title = f"Mastering {topic.title()}: Architectural Patterns & Best Practices | {guidelines.brand_name}"
         citations = research.get("citations", [])
         bib_items = [f"- [{c.get('title')}]({c.get('url')}): *{c.get('key_finding')}*" for c in citations]
         bib_section = "\n".join(bib_items) if bib_items else "- Google Cloud Architecture Center"
@@ -87,10 +97,34 @@ if __name__ == "__main__":
 {bib_section}
 """
 
-    with console.status("[bold green]Stage 3: Running SEO analysis and technical verification..."):
+    with console.status("[bold green]Stage 3: Running SEO analysis and technical verification (Critic & SEO tier)..."):
         seo = analyze_seo_and_readability(draft, target_keyword=target_kw)
         fact = fact_check_and_verify(draft)
         meta = generate_meta_and_slug(title, topic=topic)
+
+    # Human-in-the-Loop Confirmation Gate
+    approval_status = "published"
+    approval_token = None
+
+    if not auto_approve:
+        ticket = request_publication_approval(
+            article_id=f"art-{abs(hash(title)) % 10000:04d}",
+            title=title,
+            slug=meta["slug"],
+            seo_score=seo["overall_seo_score"],
+            factual_score=fact["overall_factual_score"],
+        )
+        approval_token = ticket["approval_token"]
+        rprint(Panel(f"[bold yellow]Human-in-the-Loop Confirmation Required[/bold yellow]\n{ticket['message']}"))
+
+        if click.confirm("Do you approve publishing this article to the official catalog?", default=True):
+            confirm_publication_approval(approval_token, approved=True)
+            approval_status = "published"
+            rprint("[bold green]✓ Human approval confirmed. Article officially published![/bold green]")
+        else:
+            confirm_publication_approval(approval_token, approved=False, reviewer_notes="Held for manual edits.")
+            approval_status = "pending_approval"
+            rprint(f"[bold yellow]Draft saved in pending status. Approval token: {approval_token}[/bold yellow]")
 
     with console.status("[bold green]Stage 4: Packaging and persisting publication artifacts..."):
         save_result = save_blog_artifact(
@@ -98,6 +132,7 @@ if __name__ == "__main__":
             markdown_content=draft,
             topic=topic,
             target_keyword=target_kw,
+            approval_status=approval_status,
         )
 
     # Render results table
@@ -112,6 +147,7 @@ if __name__ == "__main__":
     table.add_row("SEO Score", f"{seo['overall_seo_score']}/100 ({seo['status']})")
     table.add_row("Flesch Reading Ease", f"{seo['flesch_reading_ease']} ({seo['readability_interpretation']})")
     table.add_row("Factual Integrity", f"{fact['overall_factual_score']}/100")
+    table.add_row("Status", approval_status.upper())
     table.add_row("Artifact Path", save_result["local_file"])
 
     console.print(table)
@@ -144,6 +180,26 @@ def audit(file_path: str, keyword: str):
             console.print(f"  • {r}")
 
 
+@cli.command(name="approve")
+@click.argument("token_or_id")
+@click.option("--notes", "-n", default="Approved via CLI", help="Reviewer notes")
+def approve_article(token_or_id: str, notes: str):
+    """Human-in-the-loop command to approve a pending publication draft."""
+    result = confirm_publication_approval(token_or_id, approved=True, reviewer_notes=notes)
+    if result["status"] == "approved":
+        console.print(f"[bold green]✓ {result['message']}[/bold green]")
+    else:
+        console.print(f"[bold red]✗ {result['message']}[/bold red]")
+
+
+@cli.command(name="compact")
+@click.option("--tokens", "-t", default=4000, help="Target token budget ceiling")
+def compact_context(tokens: int):
+    """Prune intermediate context bloat and compress session memory."""
+    report = compact_session_history(max_tokens=tokens)
+    console.print(f"[bold green]✓ Context compaction complete.[/bold green] {report['summary']}")
+
+
 @cli.command(name="guidelines")
 def view_guidelines():
     """Display active brand voice and editorial rules."""
@@ -167,6 +223,7 @@ def list_articles():
     table.add_column("Title", style="bold")
     table.add_column("Words")
     table.add_column("SEO")
+    table.add_column("Status")
     table.add_column("Slug")
 
     for a in articles:
@@ -175,6 +232,7 @@ def list_articles():
             a["title"][:40],
             str(a["word_count"]),
             f"{a['seo_score']}",
+            a.get("approval_status", "published"),
             a["slug"],
         )
     console.print(table)

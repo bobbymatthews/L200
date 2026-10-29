@@ -2,11 +2,13 @@
 
 Specialized sub-agent dedicated to technical accuracy auditing, hallucination
 detection, citation validation, and structured revision loops.
+Routed to high-reasoning model (Gemini Pro tier) for rigorous contradiction detection.
 """
 
 from __future__ import annotations
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.workflow._retry_config import RetryConfig
 
 from src.config import settings
 from src.tools.memory_tools import get_brand_guidelines
@@ -27,10 +29,19 @@ Your responsibilities:
    - If the draft fails or has critical flaws: Provide bulleted, actionable revision instructions for the writer agent.
 """
 
+critic_retry_config = RetryConfig(
+    max_attempts=settings.model_max_retries,
+    initial_delay=settings.model_retry_delay,
+    max_delay=settings.model_max_delay,
+    backoff_factor=2.0,
+    jitter=1.0,
+)
+
 critic_agent = Agent(
-    model=settings.model_name,
+    model=settings.critic_model,
     name="critic_agent",
     description="Audits technical claims, detects hallucinations, verifies code validity, and provides editorial revision feedback.",
     instruction=CRITIC_INSTRUCTION,
     tools=[fact_check_and_verify, get_brand_guidelines],
+    retry_config=critic_retry_config,
 )

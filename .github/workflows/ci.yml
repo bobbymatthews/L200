@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Lint, Typecheck & Tests
+    name: Lint, Typecheck & Golden Evaluation Suite
     runs-on: ubuntu-latest
 
     steps:
@@ -36,16 +36,30 @@ jobs:
 
       - name: Type Check with Mypy
         run: |
-          uv run mypy src --explicit-package-bases
+          uv run mypy src evals --explicit-package-bases
 
       - name: Run Pytest Suite with Coverage
         run: |
           uv run pytest --cov=src --cov-report=xml --cov-report=term-missing
 
-      - name: Upload Coverage to Actions
+      - name: Run Golden Dataset Evaluation Suite
+        run: |
+          uv run python -m evals.evaluator
+
+      - name: Upload Test Coverage Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-report
           path: coverage.xml
           retention-days: 7
+
+      - name: Upload Golden Evaluation Scorecard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: golden-evaluation-report
+          path: |
+            evals/eval_results.json
+            evals/eval_report.md
+          retention-days: 14

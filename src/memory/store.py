@@ -1,7 +1,8 @@
 """Brand Voice, Editorial Guidelines, and Long-Term Memory Management.
 
 Maintains persistent editorial standards, author personas, publication history,
-and anti-duplication memory across agent execution sessions.
+and anti-duplication memory with both native asynchronous (aiosqlite) and
+synchronous storage engines.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiosqlite
 from pydantic import BaseModel, Field
 
 from src.observability.logging import logger
@@ -67,20 +69,24 @@ class PublishedArticleRecord(BaseModel):
     published_at: str
     tags: list[str] = Field(default_factory=list)
     artifact_uri: str | None = None
+    approval_status: str = Field(default="published", description="published, pending_approval, or draft")
 
 
 class BrandMemoryStore:
-    """Persistent SQLite-backed storage for brand memory and publication history."""
+    """Persistent SQLite-backed storage supporting both async and sync execution modes."""
 
     def __init__(self, db_path: str = ".adk/brand_memory.db"):
         self.db_path = db_path
-        self._init_db()
+        self._ensure_dir()
+        self._init_db_sync()
 
-    def _init_db(self) -> None:
-        """Initialize database schema if it does not exist."""
-        path = Path(self.db_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _ensure_dir(self) -> None:
+        """Ensure parent directory exists."""
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    def _init_db_sync(self) -> None:
+        """Synchronous database schema initialization."""
+        self._ensure_dir()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -104,7 +110,19 @@ class BrandMemoryStore:
                     reading_ease REAL NOT NULL,
                     published_at TEXT NOT NULL,
                     tags TEXT,
-                    artifact_uri TEXT
+                    artifact_uri TEXT,
+                    approval_status TEXT DEFAULT 'published'
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_summaries (
+                    session_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    token_count INTEGER NOT NULL,
+                    turn_count INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -114,9 +132,118 @@ class BrandMemoryStore:
         if not self.get_guidelines():
             self.save_guidelines(BrandGuidelines())
 
+    # =========================================================================
+    # Asynchronous Database Operations (aiosqlite)
+    # =========================================================================
+
+    async def get_guidelines_async(self) -> BrandGuidelines:
+        """Asynchronously fetch current brand guidelines."""
+        self._ensure_dir()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT data FROM brand_guidelines WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    try:
+                        return BrandGuidelines.model_validate_json(row[0])
+                    except Exception as exc:
+                        logger.warning("Error parsing stored guidelines (%s); using defaults.", exc)
+        return BrandGuidelines()
+
+    async def save_guidelines_async(self, guidelines: BrandGuidelines) -> None:
+        """Asynchronously save updated brand guidelines."""
+        self._ensure_dir()
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO brand_guidelines (id, data, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+                """,
+                (guidelines.model_dump_json(), now),
+            )
+            await db.commit()
+
+    async def record_publication_async(self, record: PublishedArticleRecord) -> None:
+        """Asynchronously record a publication entry."""
+        self._ensure_dir()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO publication_history (
+                    article_id, title, topic, slug, word_count, seo_score, reading_ease,
+                    published_at, tags, artifact_uri, approval_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.article_id,
+                    record.title,
+                    record.topic,
+                    record.slug,
+                    record.word_count,
+                    record.seo_score,
+                    record.reading_ease,
+                    record.published_at,
+                    json.dumps(record.tags),
+                    record.artifact_uri,
+                    record.approval_status,
+                ),
+            )
+            await db.commit()
+
+    async def list_publications_async(self, limit: int = 50) -> list[PublishedArticleRecord]:
+        """Asynchronously list published articles."""
+        self._ensure_dir()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT article_id, title, topic, slug, word_count, seo_score, reading_ease,
+                       published_at, tags, artifact_uri, approval_status
+                FROM publication_history
+                ORDER BY published_at DESC LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                records: list[PublishedArticleRecord] = []
+                for row in rows:
+                    records.append(
+                        PublishedArticleRecord(
+                            article_id=row[0],
+                            title=row[1],
+                            topic=row[2],
+                            slug=row[3],
+                            word_count=row[4],
+                            seo_score=row[5],
+                            reading_ease=row[6],
+                            published_at=row[7],
+                            tags=json.loads(row[8]) if row[8] else [],
+                            artifact_uri=row[9],
+                            approval_status=row[10] if len(row) > 10 and row[10] else "published",
+                        )
+                    )
+                return records
+
+    async def check_similar_topic_async(self, topic: str) -> PublishedArticleRecord | None:
+        """Asynchronously check if an article on a matching or similar topic exists."""
+        normalized = topic.lower().strip()
+        articles = await self.list_publications_async(limit=100)
+        for article in articles:
+            if (
+                normalized in article.topic.lower()
+                or article.topic.lower() in normalized
+                or normalized in article.title.lower()
+            ):
+                return article
+        return None
+
+    # =========================================================================
+    # Synchronous Database Operations (Convenience & CLI compatibility)
+    # =========================================================================
+
     def get_guidelines(self) -> BrandGuidelines:
-        """Fetch current brand guidelines."""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        """Fetch current brand guidelines synchronously."""
+        self._ensure_dir()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT data FROM brand_guidelines WHERE id = 1")
@@ -129,7 +256,8 @@ class BrandMemoryStore:
         return BrandGuidelines()
 
     def save_guidelines(self, guidelines: BrandGuidelines) -> None:
-        """Save updated brand guidelines."""
+        """Save updated brand guidelines synchronously."""
+        self._ensure_dir()
         now = datetime.now(timezone.utc).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -144,15 +272,16 @@ class BrandMemoryStore:
             conn.commit()
 
     def record_publication(self, record: PublishedArticleRecord) -> None:
-        """Record a newly published article to prevent duplicate topics."""
+        """Record an article publication synchronously."""
+        self._ensure_dir()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO publication_history (
                     article_id, title, topic, slug, word_count, seo_score, reading_ease,
-                    published_at, tags, artifact_uri
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    published_at, tags, artifact_uri, approval_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.article_id,
@@ -165,18 +294,20 @@ class BrandMemoryStore:
                     record.published_at,
                     json.dumps(record.tags),
                     record.artifact_uri,
+                    record.approval_status,
                 ),
             )
             conn.commit()
 
     def list_publications(self, limit: int = 50) -> list[PublishedArticleRecord]:
-        """List recently published articles."""
+        """List published articles synchronously."""
+        self._ensure_dir()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 SELECT article_id, title, topic, slug, word_count, seo_score, reading_ease,
-                       published_at, tags, artifact_uri
+                       published_at, tags, artifact_uri, approval_status
                 FROM publication_history
                 ORDER BY published_at DESC LIMIT ?
                 """,
@@ -197,12 +328,13 @@ class BrandMemoryStore:
                         published_at=row[7],
                         tags=json.loads(row[8]) if row[8] else [],
                         artifact_uri=row[9],
+                        approval_status=row[10] if len(row) > 10 and row[10] else "published",
                     )
                 )
             return records
 
     def check_similar_topic(self, topic: str) -> PublishedArticleRecord | None:
-        """Check if an article on a matching or closely related topic was already published."""
+        """Check if an article on a matching or similar topic exists synchronously."""
         normalized = topic.lower().strip()
         articles = self.list_publications(limit=100)
         for article in articles:
@@ -215,5 +347,5 @@ class BrandMemoryStore:
         return None
 
 
-# Global memory store instance
+# Global singleton instance
 brand_memory = BrandMemoryStore()

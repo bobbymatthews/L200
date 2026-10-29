@@ -1,7 +1,7 @@
 """OmniBlog Configuration Module.
 
 Manages application settings, GCP environment variables, ADK storage URIs,
-model configurations, and editorial quality thresholds.
+strategic model routing per agent role, human-in-the-loop gates, and editorial quality thresholds.
 """
 
 from __future__ import annotations
@@ -23,9 +23,48 @@ class Settings(BaseSettings):
 
     # Agent & LLM Configuration
     agent_name: str = Field(default="omniblog_editor_in_chief", description="Name of the root agent")
-    model_name: str = Field(default="gemini-2.5-flash", description="Gemini model identifier")
+    model_name: str = Field(default="gemini-2.5-flash", description="Base default Gemini model identifier")
     temperature: float = Field(default=0.4, description="Sampling temperature for creative balance")
     max_tokens: int = Field(default=8192, description="Max output tokens for long-form content")
+
+    # =========================================================================
+    # Strategic Model Routing (Tiered by Agent Cognitive Requirements)
+    # =========================================================================
+    orchestrator_model: str = Field(
+        default_factory=lambda: os.getenv("ORCHESTRATOR_MODEL", "gemini-2.5-pro"),
+        description="High-reasoning model for Editor-in-Chief planning and routing",
+    )
+    writer_model: str = Field(
+        default_factory=lambda: os.getenv("WRITER_MODEL", "gemini-2.5-pro"),
+        description="High-capacity model for nuanced, long-form technical prose and code generation",
+    )
+    critic_model: str = Field(
+        default_factory=lambda: os.getenv("CRITIC_MODEL", "gemini-2.5-pro"),
+        description="Precision reasoning model for fact-checking, code auditing, and contradiction detection",
+    )
+    research_model: str = Field(
+        default_factory=lambda: os.getenv("RESEARCH_MODEL", "gemini-2.5-flash"),
+        description="Fast, cost-efficient model for web search synthesis and citation extraction",
+    )
+    seo_model: str = Field(
+        default_factory=lambda: os.getenv("SEO_MODEL", "gemini-2.5-flash"),
+        description="Fast model for algorithmic scoring, slugification, and metadata formatting",
+    )
+
+    # =========================================================================
+    # Human-in-the-Loop (HITL) Publication Gate
+    # =========================================================================
+    require_human_approval: bool = Field(
+        default=True,
+        description="Whether publishing requires explicit human confirmation before catalog entry",
+    )
+
+    # =========================================================================
+    # Resilience & Retry Configuration (Handles 503 / 429 transient errors)
+    # =========================================================================
+    model_max_retries: int = Field(default=5, description="Max retry attempts for model API calls")
+    model_retry_delay: float = Field(default=1.5, description="Initial retry delay in seconds")
+    model_max_delay: float = Field(default=30.0, description="Max retry delay in seconds")
 
     # Google Cloud Platform Configuration
     google_cloud_project: str | None = Field(

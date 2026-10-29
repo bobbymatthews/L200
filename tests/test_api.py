@@ -74,6 +74,7 @@ def test_generate_article_endpoint():
         "topic": "Agentic AI with Google ADK",
         "target_keyword": "Google ADK",
         "target_word_count": 800,
+        "require_human_approval": False,
     }
     response = client.post("/api/v1/articles/generate", json=payload)
     assert response.status_code == 200
@@ -91,3 +92,31 @@ def test_generate_article_endpoint():
     articles = res_list.json()["articles"]
     assert len(articles) >= 1
     assert any(a["article_id"] == data["article_id"] for a in articles)
+
+
+def test_generate_article_with_hitl_approval():
+    """Verify Human-in-the-Loop workflow with pending approval and decision."""
+    payload = {
+        "topic": "Microservices with GKE Autopilot",
+        "target_keyword": "GKE Autopilot",
+        "require_human_approval": True,
+    }
+    response = client.post("/api/v1/articles/generate", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "pending_human_approval"
+    token = data["approval_token"]
+    assert token is not None
+
+    # Check pending approvals endpoint
+    pending_res = client.get("/api/v1/articles/pending-approval")
+    assert pending_res.status_code == 200
+    assert pending_res.json()["count"] >= 1
+
+    # Submit approval decision
+    decision_res = client.post(
+        f"/api/v1/articles/{token}/decision",
+        json={"approved": True, "reviewer_notes": "Approved by Senior Tech Lead"},
+    )
+    assert decision_res.status_code == 200
+    assert decision_res.json()["status"] == "approved"

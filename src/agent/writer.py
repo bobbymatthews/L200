@@ -2,11 +2,13 @@
 
 Specialized sub-agent dedicated to long-form technical drafting, code synthesis,
 architectural explanations, and engaging narrative development.
+Routed to high-reasoning model (Gemini Pro tier) for expressive prose and code precision.
 """
 
 from __future__ import annotations
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.workflow._retry_config import RetryConfig
 
 from src.config import settings
 from src.tools.memory_tools import get_brand_guidelines
@@ -28,10 +30,19 @@ Your responsibilities:
 Aim for a comprehensive, thorough post of at least 800-1,200 words.
 """
 
+writer_retry_config = RetryConfig(
+    max_attempts=settings.model_max_retries,
+    initial_delay=settings.model_retry_delay,
+    max_delay=settings.model_max_delay,
+    backoff_factor=2.0,
+    jitter=1.0,
+)
+
 writer_agent = Agent(
-    model=settings.model_name,
+    model=settings.writer_model,
     name="writer_agent",
     description="Drafts comprehensive, publication-ready technical blog posts with code snippets and architecture explanations.",
     instruction=WRITER_INSTRUCTION,
     tools=[get_brand_guidelines],
+    retry_config=writer_retry_config,
 )

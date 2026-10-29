@@ -1,5 +1,9 @@
 """Tools package for OmniBlog."""
 
+from src.tools.approval_tools import (
+    confirm_publication_approval,
+    request_publication_approval,
+)
 from src.tools.artifact_tools import list_saved_articles, save_blog_artifact
 from src.tools.memory_tools import (
     check_topic_history,
@@ -21,4 +25,6 @@ __all__ = [
     "check_topic_history",
     "save_blog_artifact",
     "list_saved_articles",
+    "request_publication_approval",
+    "confirm_publication_approval",
 ]

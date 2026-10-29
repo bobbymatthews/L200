@@ -19,12 +19,33 @@ def test_cli_guidelines_command():
 def test_cli_generate_command():
     """Verify `omniblog generate` creates article and displays summary."""
     runner = CliRunner()
-    result = runner.invoke(cli, ["generate", "Modern Cloud Observability", "-k", "OpenTelemetry"])
+    result = runner.invoke(cli, ["generate", "Modern Cloud Observability", "-k", "OpenTelemetry", "--auto-approve"])
     assert result.exit_code == 0
     assert "OmniBlog Editorial Newsroom" in result.output
     assert "Modern Cloud Observability" in result.output
     assert "OmniBlog Publication Summary" in result.output
     assert "Social Teaser" in result.output
+
+
+def test_cli_generate_with_hitl_confirm():
+    """Verify `omniblog generate` supports interactive human confirmation."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["generate", "Serverless Architecture with Cloud Run", "-k", "Cloud Run"],
+        input="y\n",
+    )
+    assert result.exit_code == 0
+    assert "Human-in-the-Loop Confirmation Required" in result.output
+    assert "Human approval confirmed" in result.output
+
+
+def test_cli_compact_command():
+    """Verify `omniblog compact` prunes context bloat."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["compact", "--tokens", "3000"])
+    assert result.exit_code == 0
+    assert "Context compaction complete" in result.output
 
 
 def test_cli_audit_command(tmp_path):
@@ -45,8 +66,8 @@ def test_cli_audit_command(tmp_path):
 def test_cli_list_command():
     """Verify `omniblog list` lists published articles."""
     runner = CliRunner()
-    # First invoke generate
-    runner.invoke(cli, ["generate", "FinOps Architecture"])
+    # First invoke generate with auto-approve
+    runner.invoke(cli, ["generate", "FinOps Architecture", "--auto-approve"])
     # Then list
     result = runner.invoke(cli, ["list"])
     assert result.exit_code == 0

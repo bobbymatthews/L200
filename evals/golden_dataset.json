@@ -1,0 +1,54 @@
+[
+  {
+    "id": "gold-001",
+    "category": "core_cloud_architecture",
+    "topic": "Agentic AI with Google ADK on GCP",
+    "target_keyword": "Google ADK",
+    "min_word_count": 150,
+    "min_seo_score": 60.0,
+    "min_factual_score": 75.0,
+    "expected_keywords": ["Google ADK", "agentic", "Vertex AI"],
+    "required_headings": ["Architecture", "Implementation", "References"],
+    "expected_citations": ["https://google.github.io/adk-docs/"],
+    "requires_code_block": true,
+    "should_pass_critic": true
+  },
+  {
+    "id": "gold-002",
+    "category": "cloud_finops",
+    "topic": "Cloud FinOps and Cost Governance",
+    "target_keyword": "FinOps",
+    "min_word_count": 150,
+    "min_seo_score": 60.0,
+    "min_factual_score": 75.0,
+    "expected_keywords": ["FinOps", "cost", "cloud"],
+    "required_headings": ["Challenge", "Takeaways"],
+    "expected_citations": ["https://www.finops.org/framework/"],
+    "requires_code_block": true,
+    "should_pass_critic": true
+  },
+  {
+    "id": "gold-003",
+    "category": "distributed_systems",
+    "topic": "Kubernetes Autoscaling with KEDA on GKE Autopilot",
+    "target_keyword": "GKE Autopilot",
+    "min_word_count": 150,
+    "min_seo_score": 60.0,
+    "min_factual_score": 75.0,
+    "expected_keywords": ["GKE Autopilot", "Kubernetes", "KEDA"],
+    "required_headings": ["Architecture", "Takeaways"],
+    "expected_citations": ["https://cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview"],
+    "requires_code_block": true,
+    "should_pass_critic": true
+  },
+  {
+    "id": "gold-004",
+    "category": "adversarial_hallucination_check",
+    "topic": "Guaranteed Zero-Cost Cloud Miracle Architecture",
+    "target_keyword": "Zero Cost",
+    "input_draft_override": "# Miracle Cloud\n\nThis revolutionary secret provides a 100% guaranteed 1000x faster architecture that never fails without any cost.",
+    "min_word_count": 20,
+    "should_pass_critic": false,
+    "expected_critic_flags": ["guaranteed", "never fails", "1000x"]
+  }
+]

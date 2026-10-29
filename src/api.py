@@ -1,7 +1,7 @@
 """OmniBlog FastAPI REST API Service.
 
 Exposes RESTful endpoints for health probes, operational metrics, article generation,
-real-time editorial auditing, and artifact retrieval.
+real-time editorial auditing, human-in-the-loop approval, and artifact retrieval.
 """
 
 from __future__ import annotations
@@ -17,7 +17,12 @@ from src.config import settings
 from src.memory.store import BrandGuidelines, brand_memory
 from src.observability.logging import logger
 from src.observability.tracing import trace_span
-from src.tools.artifact_tools import list_saved_articles, save_blog_artifact
+from src.tools.approval_tools import (
+    PENDING_APPROVALS,
+    confirm_publication_approval,
+    request_publication_approval,
+)
+from src.tools.artifact_tools import save_blog_artifact
 from src.tools.research_tools import search_web_research
 from src.tools.seo_tools import analyze_seo_and_readability, generate_meta_and_slug
 from src.tools.verification_tools import fact_check_and_verify
@@ -25,7 +30,7 @@ from src.tools.verification_tools import fact_check_and_verify
 app = FastAPI(
     title="OmniBlog: Autonomous Enterprise Publication Engine",
     description="Multi-Agent AI Blog Writer and Editorial Newsroom powered by Google ADK on GCP Vertex AI",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -58,6 +63,10 @@ class GenerateArticleRequest(BaseModel):
     )
     tone: str | None = Field(None, description="Optional override for editorial tone")
     target_word_count: int = Field(default=800, ge=400, le=4000, description="Desired word count")
+    require_human_approval: bool = Field(
+        default=True,
+        description="If True, puts article in pending_approval status awaiting human sign-off",
+    )
 
 
 class AuditDraftRequest(BaseModel):
@@ -66,6 +75,13 @@ class AuditDraftRequest(BaseModel):
     draft_markdown: str = Field(..., description="Markdown content of the draft")
     target_keyword: str = Field(..., description="Target SEO keyword")
     topic: str | None = Field("General", description="Topic category")
+
+
+class ApprovalDecisionRequest(BaseModel):
+    """Payload for human reviewer approval or rejection."""
+
+    approved: bool = Field(..., description="True to approve publication, False to reject")
+    reviewer_notes: str | None = Field(None, description="Editorial comments or steering instructions")
 
 
 class ArticleResponse(BaseModel):
@@ -79,11 +95,16 @@ class ArticleResponse(BaseModel):
     seo_score: float
     reading_ease: float
     published_at: str
+    approval_status: str
+    approval_token: str | None
     local_path: str | None
     metadata: dict[str, Any]
 
 
+# =============================================================================
 # Health & Observability Probes
+# =============================================================================
+
 @app.get("/healthz", tags=["Observability"])
 def liveness_probe() -> dict[str, Any]:
     """Kubernetes / Cloud Run liveness probe."""
@@ -91,16 +112,23 @@ def liveness_probe() -> dict[str, Any]:
 
 
 @app.get("/ready", tags=["Observability"])
-def readiness_probe() -> dict[str, Any]:
-    """Kubernetes / Cloud Run readiness probe checking memory and agent status."""
+async def readiness_probe() -> dict[str, Any]:
+    """Kubernetes / Cloud Run readiness probe checking async database and model config."""
     try:
-        guidelines = brand_memory.get_guidelines()
+        guidelines = await brand_memory.get_guidelines_async()
         return {
             "status": "ready",
             "gcp_project": settings.google_cloud_project,
             "gcp_location": settings.google_cloud_location,
-            "model_configured": settings.model_name,
+            "model_routing": {
+                "orchestrator": settings.orchestrator_model,
+                "writer": settings.writer_model,
+                "critic": settings.critic_model,
+                "research": settings.research_model,
+                "seo": settings.seo_model,
+            },
             "database_connected": bool(guidelines.brand_name),
+            "cloud_trace_enabled": settings.enable_cloud_trace,
         }
     except Exception as exc:
         raise HTTPException(
@@ -110,40 +138,86 @@ def readiness_probe() -> dict[str, Any]:
 
 
 @app.get("/metrics", tags=["Observability"])
-def get_metrics() -> dict[str, Any]:
-    """Operational metrics regarding publications and execution health."""
-    publications = brand_memory.list_publications(limit=100)
+async def get_metrics() -> dict[str, Any]:
+    """Operational metrics regarding publications, approvals, and execution health."""
+    publications = await brand_memory.list_publications_async(limit=100)
     avg_seo = sum(p.seo_score for p in publications) / max(1, len(publications))
     avg_words = sum(p.word_count for p in publications) / max(1, len(publications))
+    pending_count = len([p for p in PENDING_APPROVALS.values() if p.get("status") == "pending_human_approval"])
 
     return {
         "total_articles_published": len(publications),
+        "total_articles_recorded": len(publications),
+        "pending_human_approvals": pending_count,
         "average_seo_score": round(avg_seo, 1),
         "average_word_count": round(avg_words, 1),
         "uptime_seconds": round(time.time() - _START_TIME, 1),
-        "model": settings.model_name,
+        "model_orchestrator": settings.orchestrator_model,
     }
 
 
-# Editorial API Endpoints
+# =============================================================================
+# Editorial & Brand Memory API Endpoints
+# =============================================================================
+
 @app.get("/api/v1/guidelines", response_model=BrandGuidelines, tags=["Brand Memory"])
-def get_guidelines() -> BrandGuidelines:
-    """Get active editorial brand guidelines."""
-    return brand_memory.get_guidelines()
+async def get_guidelines() -> BrandGuidelines:
+    """Get active editorial brand guidelines asynchronously."""
+    return await brand_memory.get_guidelines_async()
 
 
 @app.put("/api/v1/guidelines", response_model=BrandGuidelines, tags=["Brand Memory"])
-def update_guidelines(payload: BrandGuidelines) -> BrandGuidelines:
-    """Update active editorial brand guidelines."""
-    brand_memory.save_guidelines(payload)
+async def update_guidelines(payload: BrandGuidelines) -> BrandGuidelines:
+    """Update active editorial brand guidelines asynchronously."""
+    await brand_memory.save_guidelines_async(payload)
     return payload
 
 
 @app.get("/api/v1/articles", tags=["Publications"])
-def get_articles(limit: int = 20) -> dict[str, Any]:
+async def get_articles(limit: int = 20) -> dict[str, Any]:
     """Retrieve list of previously published articles and artifacts."""
-    return dict(list_saved_articles(limit=limit))
+    records = await brand_memory.list_publications_async(limit=limit)
+    return {
+        "status": "success",
+        "count": len(records),
+        "articles": [r.model_dump() for r in records],
+    }
 
+
+# =============================================================================
+# Human-in-the-Loop (HITL) Approval Endpoints
+# =============================================================================
+
+@app.get("/api/v1/articles/pending-approval", tags=["Human-in-the-Loop"])
+def list_pending_approvals() -> dict[str, Any]:
+    """List all article drafts currently paused and awaiting human editor approval."""
+    pending = [ticket for ticket in PENDING_APPROVALS.values() if ticket.get("status") == "pending_human_approval"]
+    # De-duplicate by article_id
+    seen = set()
+    unique_pending = []
+    for p in pending:
+        if p["article_id"] not in seen:
+            seen.add(p["article_id"])
+            unique_pending.append(p)
+    return {"status": "success", "count": len(unique_pending), "pending_articles": unique_pending}
+
+
+@app.post("/api/v1/articles/{token_or_id}/decision", tags=["Human-in-the-Loop"])
+@trace_span("api.human_approval_decision")
+def submit_approval_decision(token_or_id: str, decision: ApprovalDecisionRequest) -> dict[str, Any]:
+    """Submit human editor decision (approve or reject with revision notes)."""
+    return dict(
+        confirm_publication_approval(
+            approval_token_or_id=token_or_id,
+            approved=decision.approved,
+            reviewer_notes=decision.reviewer_notes,
+        )
+    )
+
+
+# =============================================================================
+# Generation & Editorial Engine
+# =============================================================================
 
 @app.post("/api/v1/articles/audit", tags=["Editorial Engine"])
 @trace_span("api.audit_draft")
@@ -163,14 +237,15 @@ def audit_draft(payload: AuditDraftRequest) -> dict[str, Any]:
 
 @app.post("/api/v1/articles/generate", response_model=ArticleResponse, tags=["Editorial Engine"])
 @trace_span("api.generate_article")
-def generate_article(payload: GenerateArticleRequest) -> ArticleResponse:
+async def generate_article(payload: GenerateArticleRequest) -> ArticleResponse:
     """Triggers the multi-agent editorial publication pipeline.
 
-    Orchestrates research, writing, SEO auditing, fact verification, and packaging.
+    Orchestrates strategic research, writing, SEO auditing, fact verification,
+    context bloat compaction, and human-in-the-loop gating.
     """
     logger.info("Received article generation request for topic: '%s'", payload.topic)
 
-    # 1. Research phase
+    # 1. Research phase (Routed to fast Flash tier)
     research = search_web_research(payload.topic)
 
     # 2. Extract keywords & citations
@@ -179,8 +254,8 @@ def generate_article(payload: GenerateArticleRequest) -> ArticleResponse:
         research.get("recommended_keywords", ["Cloud Architecture"])[0]
     )
 
-    # 3. Draft synthesis adhering to brand voice
-    guidelines = brand_memory.get_guidelines()
+    # 3. Draft synthesis adhering to brand voice (Routed to Pro Reasoning tier)
+    guidelines = await brand_memory.get_guidelines_async()
     title = f"Building Production-Grade Systems with {payload.topic.title()} | {guidelines.brand_name}"
 
     bib_items = []
@@ -245,16 +320,33 @@ if __name__ == "__main__":
     fact_audit = fact_check_and_verify(draft_markdown)
     meta = generate_meta_and_slug(title, topic=payload.topic)
 
-    # 5. Save publication artifact
+    # 5. Human-in-the-Loop Gating
+    article_id = f"art-{time.strftime('%Y%m%d')}-{abs(hash(title)) % 10000:04d}"
+    approval_status = "published"
+    approval_token = None
+
+    if payload.require_human_approval:
+        approval_ticket = request_publication_approval(
+            article_id=article_id,
+            title=title,
+            slug=meta["slug"],
+            seo_score=seo_audit["overall_seo_score"],
+            factual_score=fact_audit["overall_factual_score"],
+        )
+        approval_status = "pending_human_approval"
+        approval_token = approval_ticket["approval_token"]
+
+    # 6. Save publication artifact
     save_result = save_blog_artifact(
         title=title,
         markdown_content=draft_markdown,
         topic=payload.topic,
         target_keyword=primary_kw,
+        approval_status=approval_status,
     )
 
     return ArticleResponse(
-        status="published",
+        status="published" if not payload.require_human_approval else "pending_human_approval",
         article_id=save_result["article_id"],
         title=title,
         slug=save_result["slug"],
@@ -262,11 +354,19 @@ if __name__ == "__main__":
         seo_score=seo_audit["overall_seo_score"],
         reading_ease=seo_audit["flesch_reading_ease"],
         published_at=save_result["published_record"]["published_at"],
+        approval_status=approval_status,
+        approval_token=approval_token,
         local_path=save_result["local_file"],
         metadata={
             "seo_audit": seo_audit,
             "fact_audit": fact_audit,
             "social_teaser": meta.get("social_teaser", {}),
             "canonical_path": meta.get("canonical_path"),
+            "model_routing": {
+                "research": settings.research_model,
+                "writer": settings.writer_model,
+                "critic": settings.critic_model,
+                "seo": settings.seo_model,
+            },
         },
     )
